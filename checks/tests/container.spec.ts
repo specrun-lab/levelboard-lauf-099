@@ -17,24 +17,14 @@ test.describe('container', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(120_000);
 
-  test('Seite läuft im Container und liest aus dem Backend', async ({ request }) => {
+  test('Seite läuft im Container und liest aus dem Backend', async ({ page, request }) => {
     const config = await request.get('/config.json');
     expect(config.status()).toBe(200);
     expect(await config.json()).toEqual({ source: 'api' });
 
-    const page = await request.get('/');
-    expect(page.status()).toBe(200);
-    const html = await page.text();
-    expect(html).toContain('data-testid="board"');
-
-    const browser = await chromium.launch();
-    const context = await browser.newContext();
-    const p = await context.newPage();
-    await p.goto('/');
-    await expect(p.getByTestId('board')).toHaveAttribute('data-state', 'ok');
-    await expect(p.getByTestId('run-source')).toHaveAttribute('data-source', 'api');
-    await context.close();
-    await browser.close();
+    await page.goto('/');
+    await expect(page.getByTestId('board')).toHaveAttribute('data-state', 'ok');
+    await expect(page.getByTestId('run-source')).toHaveAttribute('data-source', 'api');
   });
 
   test('/api/ wird an den Backend-Container weitergeleitet', async ({ request }) => {
