@@ -42,7 +42,7 @@ test.describe('level-7', () => {
     for (const part of ['frontend', 'backend']) {
       const name = `${repo}-${part}`;
       const tokenResponse = await fetch(`https://ghcr.io/token?scope=${encodeURIComponent(`repository:${name}:pull`)}`);
-      expect(tokenResponse.status(), name).toBe(200);
+      expect(tokenResponse.status, name).toBe(200);
       const token = (await tokenResponse.json()).token;
       expect(token, name).toBeTruthy();
       const manifest = await fetch(`https://ghcr.io/v2/${name}/manifests/${sha}`, {
