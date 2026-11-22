@@ -1,0 +1,34 @@
+name: ${RUN_ID:?RUN_ID fehlt}
+
+services:
+  backend:
+    image: ${IMAGE_PREFIX}-backend:${IMAGE_TAG}
+    environment:
+      RUN_ID: ${RUN_ID}
+    volumes:
+      - levelboard-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  frontend:
+    image: ${IMAGE_PREFIX}-frontend:${IMAGE_TAG}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+      web:
+        aliases:
+          - ${RUN_ID}-web
+
+networks:
+  web:
+    external: true
+
+volumes:
+  levelboard-data:

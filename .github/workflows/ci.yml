@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/specrun-lab/devcontainer:1
+      options: --user root
+    env:
+      GOMODCACHE: /home/dev/go/pkg/mod
+      GOCACHE: /home/dev/.cache/go-build
+      GOFLAGS: -modcacherw -buildvcs=false
+      GITHUB_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Level 5 starten
+        run: make level5
+      - name: Prüfsuite ausführen
+        run: make check
+      - name: Report hochladen
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: levelboard-report
+          path: |
+            frontend/dist/results.json
+            checks/.out/playwright.json
+
+  images:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+      IMAGE_TAG: ${{ github.sha }}
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.13.0
+      - name: Images bauen
+        run: docker compose build
+      - name: Container starten
+        run: docker compose up -d --wait
+      - name: Container-Suite ausführen
+        working-directory: checks
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test tests/container.spec.ts
+      - name: Container-Report hochladen
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: levelboard-container-report
+          path: checks/.out/playwright.json
+      - name: Images veröffentlichen
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker compose push
+          docker tag "${IMAGE_PREFIX}-frontend:${IMAGE_TAG}" "${IMAGE_PREFIX}-frontend:main"
+          docker tag "${IMAGE_PREFIX}-backend:${IMAGE_TAG}" "${IMAGE_PREFIX}-backend:main"
+          docker push "${IMAGE_PREFIX}-frontend:main"
+          docker push "${IMAGE_PREFIX}-backend:main"
+      - name: Container aufräumen
+        if: always()
+        run: docker compose down -v
+
+  deploy:
+    needs: images
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.13.0
+      - name: Lauf vorbereiten
+        run: |
+          set -euo pipefail
+          if [ -z "${{ vars.LIVE_DOMAIN }}" ]; then
+            echo "LIVE_DOMAIN fehlt" >&2
+            exit 1
+          fi
+          RUN_ID="${GITHUB_REPOSITORY#*/}"
+          RUN_ID="${RUN_ID#levelboard-}"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "LIVE_URL=https://${RUN_ID}.${{ vars.LIVE_DOMAIN }}" >> "$GITHUB_ENV"
+          install -m 700 -d "$RUNNER_TEMP/deploy"
+          printf '%s\n' '${{ secrets.DEPLOY_SSH_KEY }}' > "$RUNNER_TEMP/deploy/key"
+          chmod 600 "$RUNNER_TEMP/deploy/key"
+          printf '%s\n' '${{ secrets.DEPLOY_KNOWN_HOSTS }}' > "$RUNNER_TEMP/deploy/known_hosts"
+          chmod 600 "$RUNNER_TEMP/deploy/known_hosts"
+      - name: Deployment ausführen
+        run: |
+          set -euo pipefail
+          SSH="ssh -i $RUNNER_TEMP/deploy/key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/deploy/known_hosts"
+          $SSH -o IdentitiesOnly=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "mkdir -p ~/runs/$RUN_ID"
+          scp -i "$RUNNER_TEMP/deploy/key" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/deploy/known_hosts" \
+            deploy/compose.yml "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:~/runs/$RUN_ID/compose.yml"
+          {
+            echo "RUN_ID=$RUN_ID"
+            echo "IMAGE_PREFIX=$IMAGE_PREFIX"
+            echo "IMAGE_TAG=$IMAGE_TAG"
+          } > "$RUNNER_TEMP/deploy/.env"
+          scp -i "$RUNNER_TEMP/deploy/key" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/deploy/known_hosts" \
+            "$RUNNER_TEMP/deploy/.env" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:~/runs/$RUN_ID/.env"
+          $SSH -o IdentitiesOnly=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cd ~/runs/$RUN_ID && docker compose pull -q && docker compose up -d --wait --remove-orphans"
+      - name: Auf Live-Backend warten
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            body=$(curl -fsS "$LIVE_URL/api/health" 2>/dev/null || true)
+            if printf '%s' "$body" | grep -q "\"commit\":\"$IMAGE_TAG\""; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Live-Backend meldet den Commit nicht" >&2
+          exit 1
+      - name: Report herunterladen
+        uses: actions/download-artifact@v8
+        with:
+          name: levelboard-report
+          path: report
+      - name: Ergebnisse an die Live-API melden
+        run: |
+          RESULTS="report/frontend/dist/results.json"
+          if [ ! -f "$RESULTS" ]; then RESULTS="report/results.json"; fi
+          node checks/report-live.mjs "$RESULTS" "$LIVE_URL"
+      - name: Live-Seite prüfen
+        run: |
+          set -euo pipefail
+          curl -fsS -o /dev/null "$LIVE_URL/"
+          curl -fsS "$LIVE_URL/config.json" | grep -q '"api"'
