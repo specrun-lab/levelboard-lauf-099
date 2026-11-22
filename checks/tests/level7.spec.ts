@@ -49,8 +49,8 @@ test.describe('level-7', () => {
         headers: { Authorization: `Bearer ${token}`, Accept: ACCEPT },
         method: 'HEAD',
       });
-      expect(manifest.status(), name).toBeGreaterThanOrEqual(200);
-      expect(manifest.status(), name).toBeLessThan(300);
+      expect(manifest.status, name).toBeGreaterThanOrEqual(200);
+      expect(manifest.status, name).toBeLessThan(300);
     }
   });
 

@@ -41,7 +41,7 @@ test.describe('live-bericht', () => {
     const cost = tokenLevels.reduce((sum: number, token: any) => sum + token.costUsd, 0);
     const build = tokenLevels.reduce((sum: number, token: any) => sum + token.buildS, 0);
     await expect(page.getByTestId('report-cost')).toHaveText(formatCostValue(cost));
-    await expect(page.getByTestId('report-build-time')).toHaveText(`${Math.floor(build / 60)}:${String(Math.round(build % 60)).padStart(2, '0')} min`);
+    await expect(page.getByTestId('report-build-time')).toHaveText(formatSeconds(build));
 
     await expect(page.getByTestId('report-p95')).toHaveText(`${body.levels[8].metrics.loadtest.p95Ms} ms`);
     await expect(page.getByTestId('report-image-backend')).toHaveText(
